@@ -2,7 +2,7 @@
 #include "MigrationManager.hpp"
 #include "GDPSMain.hpp"
 
-#include <km7dev.server_api/include/ServerAPIEvents.hpp>
+#include <km7dev.server_api/ServerAPIEvents.hpp>
 
 Result<> MigrationManager::setup() {
     auto savePath = dirs::getSaveDir() / "gdpses";
