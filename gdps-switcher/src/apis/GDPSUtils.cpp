@@ -5,7 +5,7 @@
 #include <GDPSUtils.hpp>
 #include "../ui/ServerListLayer.hpp"
 #include "../utils/GDPSMain.hpp"
-#include <km7dev.server_api/include/ServerAPIEvents.hpp>
+#include <km7dev.server_api/ServerAPIEvents.hpp>
 #include "../utils/ServerInfoManager.hpp"
 using namespace geode::prelude;
 
