@@ -1,0 +1,457 @@
+From 55b8e2653e3d128fd151837e33fc6aedb2c7b8ce Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Thu, 26 Nov 2026 16:04:22 +0200
+Subject: [PATCH] Port to Geode v6 / GD 2.2091
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019jtA4eD6993o93BetWf6ZJ
+---
+ changelog.md                       |  5 ++
+ mod.json                           | 14 +++---
+ src/hooks/GManager.cpp             | 45 ++++++-----------
+ src/hooks/GManager.hpp             |  2 +-
+ src/hooks/MusicDownloadManager.cpp | 11 ++++-
+ src/ui/ModifyServerPopup.cpp       | 16 +++---
+ src/utils/GDPSMain.cpp             | 78 +++++++++++++++---------------
+ src/utils/MigrationManager.cpp     | 55 +++++++++------------
+ 8 files changed, 105 insertions(+), 121 deletions(-)
+
+diff --git a/changelog.md b/changelog.md
+index 25543da..66b334e 100644
+--- a/changelog.md
++++ b/changelog.md
+@@ -1,3 +1,8 @@
++# 2.1.0
++- Updated to Geode v6.0.0 and Geometry Dash 2.2091
++- Requires Server API 4.1.0
++- Save-file handling moved to Geode's new filesystem API
++- Fixed server deletion being refused when the save folder path goes through a symlink (e.g. on Android)
+ # 2.0.0
+ ### Migrate to Geode v5 and removal of legacy GDPSUtils API
+ - <cg>Migrated to Geode v5.</c>
+diff --git a/mod.json b/mod.json
+index 0c46891..a1a6282 100644
+--- a/mod.json
++++ b/mod.json
+@@ -1,12 +1,12 @@
+ {
+-	"geode": "5.3.0",
++	"geode": "6.0.0",
+ 	"gd": {
+-		"win": "2.2081",
+-		"android": "2.2081",
+-		"mac": "2.2081",
+-		"ios": "2.2081"
++		"win": "2.2091",
++		"android": "2.2091",
++		"mac": "2.2091",
++		"ios": "2.2091"
+ 	},
+-	"version": "2.0.0",
++	"version": "2.1.0",
+ 	"id": "km7dev.gdps-switcher",
+ 	"name": "GDPS Switcher",
+ 	"developers": ["km7dev", "Alphii"],
+@@ -31,7 +31,7 @@
+ 		}
+ 	},
+ 	"dependencies": {
+-		"km7dev.server_api": "4.0.0"
++		"km7dev.server_api": "4.1.0"
+ 	},
+ 	"incompatibilities": {
+ 		"capeling.geometry-dash-lunar": {
+diff --git a/src/hooks/GManager.cpp b/src/hooks/GManager.cpp
+index 02f3656..f614b25 100644
+--- a/src/hooks/GManager.cpp
++++ b/src/hooks/GManager.cpp
+@@ -1,3 +1,4 @@
++#include <asp/fs.hpp>
+ #include "GManager.hpp"
+ #include "../utils/GDPSMain.hpp"
+ 
+@@ -21,27 +22,21 @@ void GSGManager::setup() {
+     auto server = main->m_servers[main->m_currentServer];
+     const auto dir = geode::dirs::getSaveDir() / "gdpses" / server->saveDir;
+ 
+-    std::error_code err;
+-    if (!std::filesystem::exists(dir, err)) {
+-        if (err) {
+-            main->registerIssue(fmt::format("Failed to check if directory exists: {}", err.message()));
+-            return log::error("Failed to check directory '{}', data will not save: {}", geode::utils::string::pathToString(dir), err.message());
+-        }
+-        if (!std::filesystem::create_directory(dir, err)) {
+-            main->registerIssue(fmt::format("Failed to setup save file: {}", err.message()));
+-            return log::error("Failed to create directory '{}', data will not save: {}", geode::utils::string::pathToString(dir), err.message());
+-        }
+-        if (err) {
+-            main->registerIssue(fmt::format("Error after creating directory: {}", err.message()));
+-            return log::error("Error after creating directory '{}', data will not save: {}", geode::utils::string::pathToString(dir), err.message());
++    if (!dir.exists()) {
++        if (auto res = asp::fs::createDir(dir); !res) {
++            auto err = res.unwrapErr();
++            main->registerIssue(fmt::format("Failed to setup save file: {}", err));
++            return log::error("Failed to create directory '{}', data will not save: {}", dir, err);
+         }
+     }
+     m_fileName = fmt::format("{}/{}/{}", gdpsesPath, server->saveDir, m_fileName);
+     GManager::setup();
+ }
+ 
+-void GSGManager::save() {
+-    if (GDPSMain::get()->shouldSaveGameData()) GManager::save();
++// GD 2.2091 changed this to `bool save(bool async)`; the result says whether a save happened
++bool GSGManager::save(bool async) {
++    if (GDPSMain::get()->shouldSaveGameData()) return GManager::save(async);
++    return false;
+ }
+ 
+ void GSGManager::updateFileNames() {
+@@ -53,21 +48,11 @@ void GSGManager::updateFileNames() {
+         if (!res) log::error("{}", res.unwrapErr());
+         auto server = res.unwrap(); // We probably should just crash if the result is Err.
+         const auto dir = geode::dirs::getSaveDir() / "gdpses" / server->saveDir;
+-        std::error_code err;
+-        if (!std::filesystem::exists(dir, err)) {
+-            if (err) {
+-                main->registerIssue(fmt::format("Failed to check if directory exists: {}", err.message()));
+-                log::error("Failed to check directory '{}', data will not save: {}", geode::utils::string::pathToString(dir), err.message());
+-                continue;
+-            }
+-            if (!std::filesystem::create_directory(dir, err)) {
+-                main->registerIssue(fmt::format("Failed to create directory: {}", err.message()));
+-                log::error("Failed to create directory '{}', data will not save: {}", geode::utils::string::pathToString(dir), err.message());
+-                continue;
+-            }
+-            if (err) {
+-                main->registerIssue(fmt::format("Error after creating directory: {}", err.message()));
+-                log::error("Error after creating directory '{}', data will not save: {}", geode::utils::string::pathToString(dir), err.message());
++        if (!dir.exists()) {
++            if (auto res = asp::fs::createDir(dir); !res) {
++                auto err = res.unwrapErr();
++                main->registerIssue(fmt::format("Failed to create directory: {}", err));
++                log::error("Failed to create directory '{}', data will not save: {}", dir, err);
+                 continue;
+             }
+         }
+diff --git a/src/hooks/GManager.hpp b/src/hooks/GManager.hpp
+index 3a83dca..48141b7 100644
+--- a/src/hooks/GManager.hpp
++++ b/src/hooks/GManager.hpp
+@@ -13,6 +13,6 @@ class $modify(GSGManager, GManager) {
+     };
+ 
+     void setup() override;
+-    void save();
++    bool save(bool async);
+     static void updateFileNames();
+ };
+\ No newline at end of file
+diff --git a/src/hooks/MusicDownloadManager.cpp b/src/hooks/MusicDownloadManager.cpp
+index dc269d1..aee3e09 100644
+--- a/src/hooks/MusicDownloadManager.cpp
++++ b/src/hooks/MusicDownloadManager.cpp
+@@ -5,17 +5,24 @@
+ 
+ using namespace geode::prelude;
+ 
++// GD appends file names directly, so the folder needs a trailing separator
++static std::string folderString(asp::fs::Path const& path) {
++    auto str = path.string();
++    if (!str.ends_with('/') && !str.ends_with('\\')) str += '/';
++    return str;
++}
++
+ class $modify(GDPSMDL, MusicDownloadManager) {
+ 
+     std::string pathForSFXFolder(int id) {
+         if (!GDPSMain::get()->isActive()) return MusicDownloadManager::pathForSFXFolder(id);
+         auto server = GDPSMain::get()->m_servers[GDPSMain::get()->m_currentServer];
+-        return string::pathToString(dirs::getSaveDir() / "gdpses" / server->saveDir / "");
++        return folderString(dirs::getSaveDir() / "gdpses" / server->saveDir);
+     }
+ 
+     std::string pathForSongFolder(int id) {
+         if (!GDPSMain::get()->isActive()) return MusicDownloadManager::pathForSongFolder(id);
+         auto server = GDPSMain::get()->m_servers[GDPSMain::get()->m_currentServer];
+-        return string::pathToString(dirs::getSaveDir() / "gdpses" / server->saveDir / "");
++        return folderString(dirs::getSaveDir() / "gdpses" / server->saveDir);
+     }
+ };
+diff --git a/src/ui/ModifyServerPopup.cpp b/src/ui/ModifyServerPopup.cpp
+index a2da47d..927eb81 100644
+--- a/src/ui/ModifyServerPopup.cpp
++++ b/src/ui/ModifyServerPopup.cpp
+@@ -18,12 +18,10 @@ bool ModifyServerPopup::init(GDPSTypes::Server server, ServerListLayer* layer) {
+     this->m_orig = server;
+     this->setTitle(this->m_isNew ? "Add Server" : "Edit Server");
+     this->setID("ModifyServerPopup"_spr);
+-    m_closeBtn->removeFromParent();
+-    m_closeBtn = CCMenuItemSpriteExtra::create(
+-        CircleButtonSprite::createWithSpriteFrameName("geode.loader/close.png", .9f, CircleBaseColor::DarkPurple, CircleBaseSize::Small),
+-        this, menu_selector(ModifyServerPopup::onClose)
++    // Geode v6 popups use a geode::Button for close, so swap its sprite instead of replacing it
++    this->setCloseButtonSpr(
++        CircleButtonSprite::createWithSpriteFrameName("geode.loader/close.png", .9f, CircleBaseColor::DarkPurple, CircleBaseSize::Small)
+     );
+-    m_buttonMenu->addChildAtPosition(m_closeBtn, Anchor::TopLeft, {3.f, -3.f});
+     m_buttonMenu->setID("button-menu");
+     m_closeBtn->setID("close-button");
+     m_mainLayer->setID("main-layer");
+@@ -104,15 +102,15 @@ void ModifyServerPopup::checkValidity() {
+     constexpr ccColor3B validColor   = {255, 255, 255};
+ 
+     if (serverValidity & GDPSTypes::ServerInvalidity::UrlInvalid) {
+-        m_urlInput->getInputNode()->setLabelNormalColor(invalidColor);
++        m_urlInput->setTextColor(ccc4(invalidColor.r, invalidColor.g, invalidColor.b, 255));
+     } else {
+-        m_urlInput->getInputNode()->setLabelNormalColor(validColor);
++        m_urlInput->setTextColor(ccc4(validColor.r, validColor.g, validColor.b, 255));
+     }
+ 
+     if (serverValidity & GDPSTypes::ServerInvalidity::NameInvalid) {
+-        m_nameInput->getInputNode()->setLabelNormalColor(invalidColor);
++        m_nameInput->setTextColor(ccc4(invalidColor.r, invalidColor.g, invalidColor.b, 255));
+     } else {
+-        m_nameInput->getInputNode()->setLabelNormalColor(validColor);
++        m_nameInput->setTextColor(ccc4(validColor.r, validColor.g, validColor.b, 255));
+     }
+ 
+     if (serverValidity == GDPSTypes::ServerInvalidity::Valid) {
+diff --git a/src/utils/GDPSMain.cpp b/src/utils/GDPSMain.cpp
+index d4ae45a..5a0b716 100644
+--- a/src/utils/GDPSMain.cpp
++++ b/src/utils/GDPSMain.cpp
+@@ -1,3 +1,4 @@
++#include <asp/fs.hpp>
+ #include "GDPSMain.hpp"
+ #include "Types.hpp"
+ 
+@@ -10,6 +11,18 @@ using namespace geode::prelude;
+ 
+ GDPSMain* GDPSMain::m_instance = nullptr;
+ 
++// True if `child` is strictly inside `parent` (not equal to it, and not a sibling
++// that merely shares a prefix like "gdpses2"). Both paths should be canonical.
++static bool isInsideDir(std::string_view child, std::string_view parent) {
++    while (!parent.empty() && (parent.back() == '/' || parent.back() == '\\')) {
++        parent.remove_suffix(1);
++    }
++    if (parent.empty() || child.size() <= parent.size() + 1) return false;
++    if (!child.starts_with(parent)) return false;
++    char sep = child[parent.size()];
++    return sep == '/' || sep == '\\';
++}
++
+ bool GDPSMain::isActive() const {
+     if (!m_issues.empty())
+         return false;
+@@ -53,28 +66,26 @@ void GDPSMain::save() const {
+     auto newSaveDirPath = Mod::get()->getSaveDir() / "gdpses" / saveDir;
+     auto oldSaveDirPath = Mod::get()->getSaveDir() / "gdpses" / server->saveDir;
+ 
+-    std::error_code err;
+-    bool newDirExists = std::filesystem::exists(newSaveDirPath, err);
+-    if (newDirExists) {
++    if (newSaveDirPath.exists()) {
+         return geode::Err("Save directory {} already exists!", newSaveDirPath);
+     }
+-    if (err) {
+-        return geode::Err("Error checking exitence of save directory {}: {}", newSaveDirPath, err.message());
+-    }
+ 
+     auto gdpsesDir = Mod::get()->getSaveDir() / "gdpses";
+-    auto canonicalNewSaveDirPath = std::filesystem::canonical(newSaveDirPath, err);
+-    if (err) {
+-        return geode::Err("Error getting canonical path for save directory {}: {}", newSaveDirPath, err.message());
++    auto canonicalRes = newSaveDirPath.canonicalize();
++    if (!canonicalRes) {
++        return geode::Err("Error getting canonical path for save directory {}: {}", newSaveDirPath, canonicalRes.unwrapErr());
+     }
++    auto canonicalNewSaveDirPath = std::move(canonicalRes).unwrap();
+ 
+-    if (!geode::utils::string::pathToString(canonicalNewSaveDirPath).starts_with(geode::utils::string::pathToString(gdpsesDir))
+-        || std::filesystem::equivalent(newSaveDirPath, gdpsesDir)
++    if (!canonicalNewSaveDirPath.string().starts_with(gdpsesDir.string())
++        || newSaveDirPath.equivalent(gdpsesDir)
+     ) {
+         return geode::Err("Save directory already exists and cannot be overwritten.");
+     }
+ 
+-    std::filesystem::rename(geode::dirs::getSaveDir() / "gdpses" / server->saveDir, saveDir);
++    if (auto res = asp::fs::rename(geode::dirs::getSaveDir() / "gdpses" / server->saveDir, asp::fs::Path(std::string(saveDir))); !res) {
++        return geode::Err("Error moving save directory: {}", res.unwrapErr());
++    }
+     server->saveDir = saveDir;
+ 
+     return geode::Ok();
+@@ -158,21 +169,16 @@ geode::Result<> GDPSMain::modifyRegisteredServer(const GDPSTypes::Server& server
+ 
+     if (newSaveDir != m_servers[server.id]->saveDir) {
+         auto path = geode::dirs::getSaveDir() / "gdpses" / newSaveDir;
+-        std::error_code errCode;
+-        bool exists = std::filesystem::exists(path, errCode);
+ 
+-        if (exists) {
++        if (path.exists()) {
+             return geode::Err(fmt::format("Save directory \"{}\" already exists!", path));
+         }
+-        if (errCode) {
+-	        return geode::Err("Error checking validity of save directory: {}", errCode.message());
+-        }
+ 
+-	    log::info("{}", geode::dirs::getSaveDir() / "gdpses" / m_servers[server.id]->saveDir);
++        auto oldPath = geode::dirs::getSaveDir() / "gdpses" / m_servers[server.id]->saveDir;
++        log::info("{}", oldPath);
+ 
+-        std::filesystem::rename(geode::dirs::getSaveDir() / "gdpses" / m_servers[server.id]->saveDir, path, errCode);
+-	    if (errCode) {
+-	        return geode::Err("Error moving save directory: {}", errCode.message());
++        if (auto res = asp::fs::rename(oldPath, path); !res) {
++            return geode::Err("Error moving save directory: {}", res.unwrapErr());
+         }
+     }
+ 
+@@ -201,25 +207,18 @@ geode::Result<> GDPSMain::deleteServer(std::shared_ptr<GDPSTypes::Server> server
+     bool shouldRestore = m_shouldSaveGameData;
+     m_shouldSaveGameData = false;
+ 
+-    std::filesystem::path serverPath = geode::dirs::getSaveDir() / "gdpses" / server->saveDir;
+-    std::filesystem::path gdpsesDir = geode::dirs::getSaveDir() / "gdpses";
+-    std::error_code err;
+-
+-    if (!std::filesystem::exists(serverPath, err) && err) {
+-        return geode::Err("Failed to check existence of path: {}\n\nnerd shit: std::error_code message: {}", serverPath, err.message());
+-    }
++    asp::fs::Path serverPath = geode::dirs::getSaveDir() / "gdpses" / server->saveDir;
++    asp::fs::Path gdpsesDir = geode::dirs::getSaveDir() / "gdpses";
+ 
+-    err.clear();
+-    std::filesystem::path canonicalServerPath;
+-    canonicalServerPath.clear();
+-    canonicalServerPath = std::filesystem::canonical(serverPath, err);
+-    if (err) {
+-        return geode::Err("Failed to get canonical path for {}: {}", serverPath, err.message());
++    auto canonicalRes = serverPath.canonicalize();
++    if (!canonicalRes) {
++        return geode::Err("Failed to get canonical path for {}: {}", serverPath, canonicalRes.unwrapErr());
+     }
++    auto canonicalServerPath = std::move(canonicalRes).unwrap();
++    auto canonicalGdpsesDir = gdpsesDir.canonicalize().unwrapOr(gdpsesDir);
+ 
+     if (
+-        !geode::utils::string::pathToString(canonicalServerPath).starts_with(geode::utils::string::pathToString(gdpsesDir))
+-        || serverPath == gdpsesDir
++        !isInsideDir(canonicalServerPath.string(), canonicalGdpsesDir.string())
+     ) {
+         return geode::Err(
+             "Attempted to delete a path outside or equal to the gdpses directory: {}\n\n"
+@@ -230,9 +229,8 @@ geode::Result<> GDPSMain::deleteServer(std::shared_ptr<GDPSTypes::Server> server
+     }
+ 
+     log::debug("Deleting {}", serverPath);
+-    std::filesystem::remove_all(serverPath, err);
+-    if (err) {
+-        return geode::Err("Failed to delete save data for {}: {}", server->name, err.message());
++    if (auto res = asp::fs::removeDirAll(serverPath, false); !res) {
++        return geode::Err("Failed to delete save data for {}: {}", server->name, res.unwrapErr());
+     }
+ 
+     m_servers.erase(server->id);
+diff --git a/src/utils/MigrationManager.cpp b/src/utils/MigrationManager.cpp
+index ff6ca7c..6b7e64f 100644
+--- a/src/utils/MigrationManager.cpp
++++ b/src/utils/MigrationManager.cpp
+@@ -1,3 +1,4 @@
++#include <asp/fs.hpp>
+ #include "MigrationManager.hpp"
+ #include "GDPSMain.hpp"
+ 
+@@ -6,19 +7,12 @@
+ Result<> MigrationManager::setup() {
+     auto savePath = dirs::getSaveDir() / "gdpses";
+ 
+-    std::error_code err;
+-    if (!std::filesystem::exists(savePath, err)) {
+-        if (err) {
+-            return Err(fmt::format("Failed to check existence of '{}': {}", savePath.string(), err.message()));
++    if (!savePath.exists()) {
++        if (auto res = asp::fs::createDir(savePath); !res) {
++            return Err(fmt::format("Failed to create directory '{}': {}", savePath, res.unwrapErr()));
+         }
+-        if (!std::filesystem::create_directory(savePath, err)) {
+-            return Err(fmt::format("Failed to create directory '{}': {}", savePath.string(), err.message()));
+-        }
+-    } else if (!std::filesystem::is_directory(savePath, err)) {
+-        if (err) {
+-            return Err(fmt::format("Failed to check if '{}' is a directory: {}", savePath.string(), err.message()));
+-        }
+-        return Err(fmt::format("'{}' exists but is not a directory.", savePath.string()));
++    } else if (!savePath.isDir()) {
++        return Err(fmt::format("'{}' exists but is not a directory.", savePath));
+     }
+ 
+     if (Mod::get()->getSavedValue<bool>("1.4.0-migration") != true) {
+@@ -63,10 +57,17 @@ void MigrationManager::migrateData() {
+ 
+     auto gdpsPath = savePath / "gdpses";
+ 
+-    for (const auto& entry : std::filesystem::directory_iterator(savePath)) {
+-        if (!entry.is_regular_file()) continue;
++    auto dirIter = asp::fs::iterDir(savePath);
++    if (!dirIter) {
++        log::error("Failed to read save directory '{}': {}", savePath, dirIter.unwrapErr());
++        return;
++    }
++    for (auto entryRes : std::move(dirIter).unwrap()) {
++        if (!entryRes) continue;
++        auto entry = std::move(entryRes).unwrap();
++        if (!entry.isFile()) continue;
+ 
+-        auto fname = geode::utils::string::pathToString(entry.path().filename());
++        auto fname = std::string(entry.path.filename().value_or(asp::fs::PathView("")).string());
+         if ((!fname.starts_with("CCGameManager-") && !fname.starts_with("CCLocalLevels-")) || !fname.ends_with(".dat")) {
+             continue;
+         }
+@@ -82,31 +83,21 @@ void MigrationManager::migrateData() {
+         }
+ 
+         auto dir = gdpsPath / name;
+-        std::error_code err;
+-        if (!std::filesystem::exists(dir, err)) {
+-            if (err) {
+-                log::error("Failed to check existence of directory '{}': {}", dir.string(), err.message());
++        if (!dir.exists()) {
++            if (auto res = asp::fs::createDir(dir); !res) {
++                log::error("Failed to create directory '{}': {}", dir, res.unwrapErr());
+                 continue;
+             }
+-            if (!std::filesystem::create_directory(dir, err)) {
+-                log::error("Failed to create directory '{}': {}", dir.string(), err.message());
+-                continue;
+-            }
+-        } else if (!std::filesystem::is_directory(dir, err)) {
+-            if (err) {
+-                log::error("Failed to check if '{}' is a directory: {}", dir.string(), err.message());
+-            } else {
+-                log::error("'{}' exists but is not a directory.", dir.string());
+-            }
++        } else if (!dir.isDir()) {
++            log::error("'{}' exists but is not a directory.", dir);
+             continue;
+         }
+ 
+         auto newName = fname.substr(0, start - 1) + (isBackup ? "2" : "") + fname.substr(end);
+         auto newPath = dir / newName;
+ 
+-        std::filesystem::rename(savePath / fname, newPath, err);
+-        if (err) {
+-            log::error("Failed to move file '{}' to '{}': {}", fname, newPath.string(), err.message());
++        if (auto res = asp::fs::rename(savePath / fname, newPath); !res) {
++            log::error("Failed to move file '{}' to '{}': {}", fname, newPath, res.unwrapErr());
+         }
+     }
+     Mod::get()->setSavedValue<bool>("1.4.0-migration", true);
+-- 
+2.43.0
+

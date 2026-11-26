@@ -1,0 +1,554 @@
+From 964818b5295b4afa3852fa8d9ece886fdf5566da Mon Sep 17 00:00:00 2001
+From: port <port@local>
+Date: Thu, 26 Nov 2026 16:04:22 +0200
+Subject: [PATCH] Port to Geode v6 / GD 2.2091
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019jtA4eD6993o93BetWf6ZJ
+---
+ changelog.md                |   4 ++
+ include/ServerAPIEvents.hpp |  21 +++---
+ mod.json                    |  12 ++--
+ src/GameUrls.cpp            | 128 ++++++++++++++++++++++++++++++++++++
+ src/GameUrls.hpp            |  23 +++++++
+ src/GameUrlsScan.hpp        | 115 ++++++++++++++++++++++++++++++++
+ src/PlatformOffsets.hpp     |  58 ----------------
+ src/ServerAPI.cpp           |  29 ++++----
+ src/hooks/CCHttpClient.cpp  |   2 +-
+ 9 files changed, 304 insertions(+), 88 deletions(-)
+ create mode 100644 src/GameUrls.cpp
+ create mode 100644 src/GameUrls.hpp
+ create mode 100644 src/GameUrlsScan.hpp
+ delete mode 100644 src/PlatformOffsets.hpp
+
+diff --git a/changelog.md b/changelog.md
+index 7316a0e..c2e1bf1 100644
+--- a/changelog.md
++++ b/changelog.md
+@@ -1,3 +1,7 @@
++# 4.1.0
++- Updated to Geode v6.0.0 and Geometry Dash 2.2091
++- Built-in server URLs are now found by scanning the game binary at runtime instead of using hard-coded per-version offsets
++- Event exports moved to the new `GEODE_EVENT_EXPORT` macro (call sites are unchanged)
+ # 4.0.1
+ - Updated GitHub link and removed old server and site links
+ # 4.0.0
+diff --git a/include/ServerAPIEvents.hpp b/include/ServerAPIEvents.hpp
+index caf588f..8c8ef3d 100644
+--- a/include/ServerAPIEvents.hpp
++++ b/include/ServerAPIEvents.hpp
+@@ -9,6 +9,7 @@
+ // geode
+ #include <Geode/loader/Mod.hpp>
+ #include <Geode/loader/Dispatch.hpp>
++#include <Geode/loader/EventExport.hpp>
+ #include <Geode/utils/StringMap.hpp>
+ 
+ #ifdef MY_MOD_ID
+@@ -37,23 +38,23 @@ struct Server {
+ 
+ /// @brief Gets copy of the server currently in use by ServerAPI
+ /// @return Server struct representing server currently in use by ServerAPI
+-inline Server getCurrentServer() GEODE_EVENT_EXPORT_NORES(&getCurrentServer, ());
++GEODE_EVENT_EXPORT(Server, getCurrentServer, (), ());
+ 
+ /// @brief Gets copy of server information from its ID
+ /// @return Server struct representing the server with the specified ID
+-inline Server getServerById(int id) GEODE_EVENT_EXPORT_NORES(&getServerById, (id));
++GEODE_EVENT_EXPORT(Server, getServerById, (int id), (id));
+ 
+ /// @brief Registers a server for ServerAPI to use
+ /// @param url The server's URL (e.g. https://www.boomlings.com/)
+ /// @param priority Its priority with respect to other servers competing for GD to connect to
+ /// @return Server struct representing the newly registered server
+-inline Server registerServer(::std::string url, int priority = 0, ::geode::Mod* sender = ::geode::Mod::get()) GEODE_EVENT_EXPORT_NORES(&registerServer, (::std::move(url), priority, sender));
++GEODE_EVENT_EXPORT(Server, registerServer, (::std::string url, int priority = 0, ::geode::Mod* sender = ::geode::Mod::get()), (::std::move(url), priority, sender));
+ 
+ /// @brief Updates an existing server
+ /// @param id Handle to an already existing server
+ /// @param url The new url for the server to use
+ /// @param priority The new priority for ServerAPI
+-inline void updateServer(int id, ::std::string url, int priority, ::geode::Mod* sender = ::geode::Mod::get()) GEODE_EVENT_EXPORT_NORES(&updateServer, (id, ::std::move(url), priority, sender));
++GEODE_EVENT_EXPORT(void, updateServer, (int id, ::std::string url, int priority, ::geode::Mod* sender = ::geode::Mod::get()), (id, ::std::move(url), priority, sender));
+ 
+ /// @brief Updates an existing server
+ /// @param server The information to update the server with, the ID being a handle to the already existing server
+@@ -77,19 +78,20 @@ inline void updateServer(int id, int priority, ::geode::Mod* sender = ::geode::M
+ 
+ /// @brief Removes a server from the registry
+ /// @param id Handle to the server to remove
+-inline void removeServer(int id, ::geode::Mod* sender = ::geode::Mod::get()) GEODE_EVENT_EXPORT_NORES(&removeServer, (id, sender));
++GEODE_EVENT_EXPORT(void, removeServer, (int id, ::geode::Mod* sender = ::geode::Mod::get()), (id, sender));
+ 
+ /// @brief Gets the base (https) URL for built-in servers
+ /// @return Base (https) URL for built-in servers (boomlings.com on vanilla GD)
+-inline ::std::string getBaseUrl() GEODE_EVENT_EXPORT_NORES(&getBaseUrl, ());
++GEODE_EVENT_EXPORT(::std::string, getBaseUrl, (), ());
+ 
+ /// @brief Gets the secondary (http) URL for built-in servers
+ /// @return Secondary (http) URL for built-in servers (boomlings.com on vanilla GD)
+-inline ::std::string getSecondaryUrl() GEODE_EVENT_EXPORT_NORES(&getSecondaryUrl, ());
++GEODE_EVENT_EXPORT(::std::string, getSecondaryUrl, (), ());
+ 
+ /// @brief Gets a copy the entire registry of servers
+ /// @return Map of int (ID) and pair of string (URL) and int (Priority)
+-inline ::std::map<int, ::std::pair<::std::string, int>> getRegisteredServers() GEODE_EVENT_EXPORT_NORES(&getRegisteredServers, ());
++using ServerRegistry = ::std::map<int, ::std::pair<::std::string, int>>;
++GEODE_EVENT_EXPORT(ServerRegistry, getRegisteredServers, (), ());
+ } // namespace ServerAPIEvents
+ 
+ namespace ServerAPITrust {
+@@ -106,7 +108,8 @@ enum class TrustLevel {
+ 
+ /// @brief Gets a map of mod IDs to their TrustLevel representing how trusted they are
+ /// @return Map of mod IDs to their TrustLevel representing how trusted they are
+-inline ::geode::utils::StringMap<TrustLevel> getTrustedMods() GEODE_EVENT_EXPORT_NORES(&getTrustedMods, ());
++using TrustMap = ::geode::utils::StringMap<TrustLevel>;
++GEODE_EVENT_EXPORT(TrustMap, getTrustedMods, (), ());
+ 
+ /// @brief Gets the TrustLevel associated with a mod using its ID
+ /// @param modID Mod's ID from its mod.json
+diff --git a/mod.json b/mod.json
+index 2bd0543..75acccc 100644
+--- a/mod.json
++++ b/mod.json
+@@ -1,14 +1,14 @@
+ {
+-  "geode": "5.3.0",
++  "geode": "6.0.0",
+   "gd": {
+-    "win": "2.2081",
+-    "android": "2.2081",
+-    "mac": "2.2081",
+-    "ios": "2.2081"
++    "win": "2.2091",
++    "android": "2.2091",
++    "mac": "2.2091",
++    "ios": "2.2091"
+   },
+   "id": "km7dev.server_api",
+   "name": "Server API",
+-  "version": "v4.0.1",
++  "version": "v4.1.0",
+   "developers": ["km7dev", "Alphii"],
+   "description": "An API for using other GD servers",
+   "api": {
+diff --git a/src/GameUrls.cpp b/src/GameUrls.cpp
+new file mode 100644
+index 0000000..ec0951f
+--- /dev/null
++++ b/src/GameUrls.cpp
+@@ -0,0 +1,128 @@
++#include "GameUrls.hpp"
++
++#include <Geode/platform/platform.hpp>
++#include <Geode/loader/Log.hpp>
++
++#include <array>
++#include <cstdint>
++#include <optional>
++#include <string_view>
++#include <vector>
++
++#if defined(GEODE_IS_WINDOWS)
++    #include <Windows.h>
++#elif defined(GEODE_IS_ANDROID)
++    #include <link.h>
++#elif defined(GEODE_IS_MACOS) || defined(GEODE_IS_IOS)
++    #include <mach-o/getsect.h>
++    #include <mach-o/loader.h>
++#endif
++
++#include "GameUrlsScan.hpp"
++
++namespace {
++    using Region = std::string_view;
++
++    // Collects the readable data regions of the main GD module.
++    std::vector<Region> gameDataRegions() {
++        std::vector<Region> regions;
++        auto const base = geode::base::get();
++        if (!base) return regions;
++
++#if defined(GEODE_IS_WINDOWS)
++        auto dos = reinterpret_cast<IMAGE_DOS_HEADER const*>(base);
++        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return regions;
++        auto nt = reinterpret_cast<IMAGE_NT_HEADERS const*>(base + dos->e_lfanew);
++        if (nt->Signature != IMAGE_NT_SIGNATURE) return regions;
++        auto section = IMAGE_FIRST_SECTION(nt);
++        for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
++            auto const flags = section->Characteristics;
++            if (!(flags & IMAGE_SCN_MEM_READ)) continue;
++            if (flags & (IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_DISCARDABLE)) continue;
++            auto size = section->Misc.VirtualSize ? section->Misc.VirtualSize : section->SizeOfRawData;
++            regions.emplace_back(reinterpret_cast<char const*>(base + section->VirtualAddress), size);
++        }
++#elif defined(GEODE_IS_ANDROID)
++        struct Ctx {
++            std::uintptr_t base;
++            std::vector<Region>* out;
++        } ctx { base, &regions };
++        dl_iterate_phdr([](dl_phdr_info* info, size_t, void* data) -> int {
++            auto ctx = static_cast<Ctx*>(data);
++            bool isGame = false;
++            for (int i = 0; i < info->dlpi_phnum; ++i) {
++                auto const& ph = info->dlpi_phdr[i];
++                if (ph.p_type != PT_LOAD) continue;
++                auto start = info->dlpi_addr + ph.p_vaddr;
++                if (ctx->base >= start && ctx->base < start + ph.p_memsz) {
++                    isGame = true;
++                    break;
++                }
++            }
++            if (!isGame) return 0;
++            for (int i = 0; i < info->dlpi_phnum; ++i) {
++                auto const& ph = info->dlpi_phdr[i];
++                if (ph.p_type != PT_LOAD || !(ph.p_flags & PF_R)) continue;
++                // Only file-backed bytes; string literals never live in .bss
++                ctx->out->emplace_back(
++                    reinterpret_cast<char const*>(info->dlpi_addr + ph.p_vaddr), ph.p_filesz
++                );
++            }
++            return 1;
++        }, &ctx);
++#elif defined(GEODE_IS_MACOS) || defined(GEODE_IS_IOS)
++        auto header = reinterpret_cast<mach_header_64 const*>(base);
++        if (header->magic != MH_MAGIC_64) return regions;
++        for (auto [seg, sect] : std::array<std::pair<char const*, char const*>, 2> {{
++            {"__TEXT", "__cstring"},
++            {"__TEXT", "__const"},
++        }}) {
++            unsigned long size = 0;
++            auto data = getsectiondata(header, seg, sect, &size);
++            if (data && size) regions.emplace_back(reinterpret_cast<char const*>(data), size);
++        }
++#endif
++        return regions;
++    }
++}
++
++GameUrls::Result GameUrls::find() {
++    Result result;
++    auto regions = gameDataRegions();
++
++    for (auto const& region : regions) {
++        if (result.base.empty()) {
++            if (auto found = scan::findBaseUrl(region)) {
++                result.base = std::move(*found);
++                result.baseFromBinary = true;
++            }
++        }
++        if (result.secondary.empty()) {
++            if (auto found = scan::findSecondaryUrl(region)) {
++                result.secondary = std::move(*found);
++                result.secondaryFromBinary = true;
++            }
++        }
++        if (!result.base.empty() && !result.secondary.empty()) break;
++    }
++
++    if (result.base.empty()) {
++        geode::log::warn("Could not find the built-in server URL in the game binary, using the vanilla URL");
++        result.base = scan::VANILLA_BASE;
++    }
++    if (result.secondary.empty()) {
++        // A patched executable usually only changes the host, so derive it from the base URL
++        if (result.baseFromBinary && result.base.starts_with("https://")) {
++            result.secondary = "http://" + result.base.substr(8);
++        } else {
++            result.secondary = scan::VANILLA_SECONDARY;
++        }
++    }
++
++    geode::log::info(
++        "Built-in server URLs: {} ({}), {} ({})",
++        result.base, result.baseFromBinary ? "from binary" : "fallback",
++        result.secondary, result.secondaryFromBinary ? "from binary" : "fallback"
++    );
++    return result;
++}
+diff --git a/src/GameUrls.hpp b/src/GameUrls.hpp
+new file mode 100644
+index 0000000..254fda2
+--- /dev/null
++++ b/src/GameUrls.hpp
+@@ -0,0 +1,23 @@
++#pragma once
++
++#include <string>
++
++// Locates the built-in server URLs inside the loaded Geometry Dash binary.
++//
++// Previous versions of Server API read these strings from hard-coded offsets,
++// which had to be re-found by hand for every GD update and every platform.
++// This scans the game's read-only data at runtime instead, so it keeps working
++// across GD versions and still picks up custom URLs in pre-patched GDPS
++// executables (which keep the endpoint names and only replace the host part).
++namespace GameUrls {
++    struct Result {
++        // e.g. "https://www.boomlings.com/database/"
++        std::string base;
++        // e.g. "http://www.boomlings.com/database/"
++        std::string secondary;
++        bool baseFromBinary = false;
++        bool secondaryFromBinary = false;
++    };
++
++    Result find();
++}
+diff --git a/src/GameUrlsScan.hpp b/src/GameUrlsScan.hpp
+new file mode 100644
+index 0000000..522ec35
+--- /dev/null
++++ b/src/GameUrlsScan.hpp
+@@ -0,0 +1,115 @@
++#pragma once
++
++// Platform-independent string matching used by GameUrls.cpp.
++// Kept header-only and free of Geode includes so it can be unit-tested on any host.
++
++#include <cstddef>
++#include <optional>
++#include <string>
++#include <string_view>
++
++namespace GameUrls::scan {
++    inline constexpr std::string_view VANILLA_BASE = "https://www.boomlings.com/database/";
++    inline constexpr std::string_view VANILLA_SECONDARY = "http://www.boomlings.com/database/";
++
++    // Endpoints GD appends to the two URLs we look for. Patched GDPS executables
++    // replace the host part but keep these.
++    inline constexpr std::string_view BASE_ENDPOINT = "getGJLevelLists.php";
++    inline constexpr std::string_view SECONDARY_ENDPOINT = "getGJLevels21.php";
++
++    // base64("http") always starts with this
++    inline constexpr std::string_view BASE64_HTTP_PREFIX = "aHR0c";
++
++    inline constexpr std::size_t MAX_URL_LEN = 512;
++
++    inline bool isUrlChar(char c) {
++        return c > 0x20 && c < 0x7f;
++    }
++
++    inline bool looksLikeServerUrl(std::string_view url) {
++        if (!(url.starts_with("http://") || url.starts_with("https://"))) return false;
++        if (url.size() <= 8 || url.size() > MAX_URL_LEN) return false;
++        for (char c : url) {
++            if (!isUrlChar(c)) return false;
++        }
++        return url.ends_with('/');
++    }
++
++    // Finds a NUL-terminated "http(s)://.../getGJLevelLists.php" string and
++    // returns everything before the endpoint (with trailing slash).
++    // An https URL is preferred, since that is what vanilla GD uses for its main requests.
++    inline std::optional<std::string> findBaseUrl(std::string_view data) {
++        std::optional<std::string> httpFallback;
++        std::size_t pos = 0;
++        while ((pos = data.find(BASE_ENDPOINT, pos)) != std::string_view::npos) {
++            auto end = pos + BASE_ENDPOINT.size();
++            auto const hit = pos;
++            pos = end;
++            if (end < data.size() && data[end] != '\0') continue;
++
++            auto start = hit;
++            while (start > 0 && data[start - 1] != '\0' && hit - start < MAX_URL_LEN) {
++                --start;
++            }
++            auto url = data.substr(start, hit - start);
++            if (!looksLikeServerUrl(url)) continue;
++            if (url.starts_with("https://")) return std::string(url);
++            if (!httpFallback) httpFallback = std::string(url);
++        }
++        return httpFallback;
++    }
++
++    inline int base64Value(char c) {
++        if (c >= 'A' && c <= 'Z') return c - 'A';
++        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
++        if (c >= '0' && c <= '9') return c - '0' + 52;
++        if (c == '+' || c == '-') return 62;
++        if (c == '/' || c == '_') return 63;
++        return -1;
++    }
++
++    // Accepts both the standard and URL-safe alphabets, padding optional.
++    inline std::optional<std::string> base64Decode(std::string_view in) {
++        while (!in.empty() && in.back() == '=') in.remove_suffix(1);
++        std::string out;
++        out.reserve(in.size() * 3 / 4);
++        unsigned int buffer = 0;
++        int bits = 0;
++        for (char c : in) {
++            int v = base64Value(c);
++            if (v < 0) return std::nullopt;
++            buffer = (buffer << 6) | static_cast<unsigned int>(v);
++            bits += 6;
++            if (bits >= 8) {
++                bits -= 8;
++                out.push_back(static_cast<char>((buffer >> bits) & 0xff));
++            }
++        }
++        return out;
++    }
++
++    // Finds the NUL-terminated base64 string that decodes to
++    // "http(s)://.../getGJLevels21.php" and returns the part before the endpoint.
++    inline std::optional<std::string> findSecondaryUrl(std::string_view data) {
++        std::size_t pos = 0;
++        while ((pos = data.find(BASE64_HTTP_PREFIX, pos)) != std::string_view::npos) {
++            auto const start = pos;
++            pos += BASE64_HTTP_PREFIX.size();
++            if (start > 0 && data[start - 1] != '\0') continue;
++
++            auto end = start;
++            while (end < data.size() && data[end] != '\0' && end - start < MAX_URL_LEN * 2) {
++                ++end;
++            }
++            if (end < data.size() && data[end] != '\0') continue;
++
++            auto decoded = base64Decode(data.substr(start, end - start));
++            if (!decoded || !decoded->ends_with(SECONDARY_ENDPOINT)) continue;
++            decoded->resize(decoded->size() - SECONDARY_ENDPOINT.size());
++            if (looksLikeServerUrl(*decoded)) {
++                return decoded;
++            }
++        }
++        return std::nullopt;
++    }
++}
+diff --git a/src/PlatformOffsets.hpp b/src/PlatformOffsets.hpp
+deleted file mode 100644
+index 05d61ec..0000000
+--- a/src/PlatformOffsets.hpp
++++ /dev/null
+@@ -1,58 +0,0 @@
+-#include <cstdint>
+-#include <Geode/platform/platform.hpp>
+-
+-struct GJMoreGamesLayer;
+-
+-// TODO UPDATE FOR 2.208 oh fuck me
+-// Base URL: https://www.boomlings.com/database/getGJLevelLists.php
+-// Secondary URL: aHR0cDovL3d3dy5ib29tbGluZ3MuY29tL2RhdGFiYXNlL2dldEdKTGV2ZWxzMjEucGhw
+-#ifdef GEODE_IS_ANDROID
+-    constexpr bool IS_SUPPORTED_PLATFORM = true;
+-    inline bool evaluateAmazon() {
+-        return !((GJMoreGamesLayer *volatile)nullptr)->getMoreGamesList()->count();
+-    }
+-    #ifdef GEODE_IS_ANDROID64
+-        constexpr std::uintptr_t BASE_URL_OFFSET_AMAZON      = 0xea27f8; // These amazon ones are the ones from prev. commits; may be inaccurate
+-        constexpr std::uintptr_t BASE_URL_OFFSET             = 0xecce60;
+-        constexpr std::uintptr_t SECONDARY_URL_OFFSET_AMAZON = 0xea15b8;
+-        constexpr std::uintptr_t SECONDARY_URL_OFFSET        = 0xecbcc8;
+-    #elif defined(GEODE_IS_ANDROID32)
+-        constexpr std::uintptr_t BASE_URL_OFFSET_AMAZON      = 0x952cce;
+-        constexpr std::uintptr_t BASE_URL_OFFSET             = 0x96bfcb;
+-        constexpr std::uintptr_t SECONDARY_URL_OFFSET_AMAZON = 0x861c41;
+-        constexpr std::uintptr_t SECONDARY_URL_OFFSET        = 0x96afcb;
+-    #endif
+-#else
+-    inline bool evaluateAmazon() { return false; }
+-#endif
+-#ifdef GEODE_IS_WINDOWS
+-    constexpr bool IS_SUPPORTED_PLATFORM = true;
+-    constexpr std::uintptr_t BASE_URL_OFFSET_AMAZON      = 0x0;
+-    constexpr std::uintptr_t BASE_URL_OFFSET             = 0x558d78;
+-    constexpr std::uintptr_t SECONDARY_URL_OFFSET_AMAZON = 0x0;
+-    constexpr std::uintptr_t SECONDARY_URL_OFFSET        = 0x558dc0;
+-#elif defined(GEODE_IS_ARM_MAC)
+-    constexpr bool IS_SUPPORTED_PLATFORM = true;
+-    constexpr std::uintptr_t BASE_URL_OFFSET_AMAZON      = 0x0;
+-    constexpr std::uintptr_t BASE_URL_OFFSET             = 0x77d8d8;
+-    constexpr std::uintptr_t SECONDARY_URL_OFFSET_AMAZON = 0x0;
+-    constexpr std::uintptr_t SECONDARY_URL_OFFSET        = 0x77d989;
+-#elif defined(GEODE_IS_INTEL_MAC)
+-    constexpr bool IS_SUPPORTED_PLATFORM = true;
+-    constexpr std::uintptr_t BASE_URL_OFFSET_AMAZON      = 0x0;
+-    constexpr std::uintptr_t BASE_URL_OFFSET             = 0x868fcf;
+-    constexpr std::uintptr_t SECONDARY_URL_OFFSET_AMAZON = 0x0;
+-    constexpr std::uintptr_t SECONDARY_URL_OFFSET        = 0x869080;
+-#elif defined(GEODE_IS_IOS)
+-    constexpr bool IS_SUPPORTED_PLATFORM = true;
+-    constexpr std::uintptr_t BASE_URL_OFFSET_AMAZON      = 0x0;
+-    constexpr std::uintptr_t BASE_URL_OFFSET             = 0x6b8e9f;
+-    constexpr std::uintptr_t SECONDARY_URL_OFFSET_AMAZON = 0x0;
+-    constexpr std::uintptr_t SECONDARY_URL_OFFSET        = 0x6b8f50;
+-#elif !defined(GEODE_IS_ANDROID)
+-    constexpr bool IS_SUPPORTED_PLATFORM = false;
+-    constexpr std::uintptr_t BASE_URL_OFFSET_AMAZON      = 0x0;
+-    constexpr std::uintptr_t BASE_URL_OFFSET             = 0x0;
+-    constexpr std::uintptr_t SECONDARY_URL_OFFSET_AMAZON = 0x0;
+-    constexpr std::uintptr_t SECONDARY_URL_OFFSET        = 0x0;
+-#endif
+diff --git a/src/ServerAPI.cpp b/src/ServerAPI.cpp
+index c884752..357baa9 100644
+--- a/src/ServerAPI.cpp
++++ b/src/ServerAPI.cpp
+@@ -3,14 +3,21 @@
+ #include <Geode/Geode.hpp>
+ #include "ServerAPI.hpp"
+ #include "../include/ServerAPIEvents.hpp"
+-#include "Geode/cocos/support/zip_support/ZipUtils.h"
+-#include "PlatformOffsets.hpp"
++#include "GameUrls.hpp"
+ #include "VoidCast.hpp"
+ 
+ using namespace ServerAPIEvents;
+ using namespace geode::prelude;
+ 
+-constexpr int REQUIRED_GD_VERSION = 22081; // we should put this somewhere else probably
++#ifdef GEODE_IS_ANDROID
++struct GJMoreGamesLayer;
++// The Amazon build of GD ships with an empty "More Games" list
++static bool evaluateAmazon() {
++    return !((GJMoreGamesLayer *volatile)nullptr)->getMoreGamesList()->count();
++}
++#else
++static bool evaluateAmazon() { return false; }
++#endif
+ 
+ const StringMap<ServerAPITrust::TrustLevel> ServerAPI::m_trustedModsLUT = {
+     {"lblazen.gdps_hub", ServerAPITrust::TrustLevel::HighlyTrusted},
+@@ -112,20 +119,14 @@ std::string ServerAPI::getSecondaryUrl() {
+ 
+ void ServerAPI::init() {
+     m_amazon = evaluateAmazon();
+-    static_assert(GEODE_COMP_GD_VERSION == REQUIRED_GD_VERSION, "Unsupported GD version");
+-    static_assert(IS_SUPPORTED_PLATFORM, "Unsupported platform");
+ 
+-    this->m_baseUrl = (char*)(geode::base::get() + (m_amazon ? BASE_URL_OFFSET_AMAZON : BASE_URL_OFFSET));
+-    this->m_secondaryUrl = ZipUtils::base64URLDecode((char *)(geode::base::get() + (m_amazon ? SECONDARY_URL_OFFSET_AMAZON : SECONDARY_URL_OFFSET)));
++    // The URLs are located by scanning the game binary rather than via
++    // per-version offsets, see GameUrls.cpp
++    auto urls = GameUrls::find();
++    this->m_baseUrl = std::move(urls.base);
++    this->m_secondaryUrl = std::move(urls.secondary);
+     m_cache = ServerCache::none();
+ 
+-    // Trims endpoint off of URL.
+-    if (this->m_baseUrl.size() > 36)
+-        this->m_baseUrl = this->m_baseUrl.substr(0, 35);
+-    
+-    if (this->m_secondaryUrl.size() > 35)
+-        this->m_secondaryUrl = this->m_secondaryUrl.substr(0, 34);
+-
+     // Overrides web requests to base servers from other mods (Requires them to have a cookie __SERVERAPI_OVERRIDE_URL=1)
+     m_webRequestInterceptor = web::WebRequestInterceptEvent().listen([](web::WebRequest& req) noexcept -> ListenerResult {
+         bool shouldOverride = false;
+diff --git a/src/hooks/CCHttpClient.cpp b/src/hooks/CCHttpClient.cpp
+index 7d50173..1a79321 100644
+--- a/src/hooks/CCHttpClient.cpp
++++ b/src/hooks/CCHttpClient.cpp
+@@ -25,7 +25,7 @@ class $modify(CCHttpClient) {
+         } else if (url.starts_with(secondaryUrl)) {
+             // robtop please
+             // just replace this one with https
+-            req->setUrl(url.replace(0, 34, newUrl).c_str());
++            req->setUrl(url.replace(0, secondaryUrl.length(), newUrl).c_str());
+         }
+         CCHttpClient::send(req);
+     }
+-- 
+2.43.0
+
