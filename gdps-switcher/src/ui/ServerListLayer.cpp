@@ -6,7 +6,7 @@
 #include "utils/GDPSMain.hpp"
 #include "utils/ServerInfoManager.hpp"
 
-#include <km7dev.server_api/include/ServerAPIEvents.hpp>
+#include <km7dev.server_api/ServerAPIEvents.hpp>
 
 using namespace geode::prelude;
 
