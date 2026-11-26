@@ -4,7 +4,7 @@
 #include "utils/GDPSMain.hpp"
 #include "Types.hpp"
 #include <regex>
-#include <km7dev.server_api/include/ServerAPIEvents.hpp>
+#include <km7dev.server_api/ServerAPIEvents.hpp>
 #include "../hooks/GManager.hpp"
 
 bool ModifyServerPopup::init(GDPSTypes::Server server, ServerListLayer* layer) {
