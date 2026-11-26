@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Types.hpp"
-#include <km7dev.server_api/include/ServerAPIEvents.hpp>
+#include <km7dev.server_api/ServerAPIEvents.hpp>
 
 #include <vector>
 #include <string>
